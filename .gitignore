@@ -1,4 +1,4 @@
 .venv
-.__pyapche__
+.__pycache__
 .uploaded_files
 .env

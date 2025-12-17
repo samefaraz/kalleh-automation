@@ -1,22 +1,20 @@
-# Use a slim version of Python
-FROM python:3.10-slim
+FROM python:3.13-slim
 
-# Set the working directory inside the container
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# Copy the entrypoint script into the image
-COPY entrypoint.sh /usr/local/bin/
-# Make it executable
-RUN chmod +x /usr/local/bin/entrypoint.sh
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# For security, we will run commands as a non-root user.
-RUN addgroup --system user && adduser --system --group user
+COPY . .
 
-# Change ownership of the /app directory to the non-root user
-RUN chown user:user /app
+EXPOSE 8000
 
-# Switch to the non-root user
-USER user
-
-# Set the entrypoint for the container
-ENTRYPOINT ["entrypoint.sh"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

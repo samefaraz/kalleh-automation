@@ -246,7 +246,8 @@ def fetch_function_by_name(function_name: str) -> Optional[Dict[str, Any]]:
                     f.requirements, 
                     f.execution_interval, 
                     f.last_execution, 
-                    STRING_AGG(fc.division, ', ') AS divisions
+                    STRING_AGG(fc.division, ', ') AS divisions,
+                    STRING_AGG(fc.email, ', ') AS emails
                 FROM 
                     functions AS f 
                 JOIN 
@@ -271,6 +272,8 @@ def fetch_function_by_name(function_name: str) -> Optional[Dict[str, Any]]:
         function_args = create_function_args_from_parameters(parameters)
         division_string = row[5]
         division_list = division_string.split(', ')
+        email_string = row[6]
+        email_list = email_string.split(', ')
         # Convert row to dictionary
         function_data = {
             "function_code": function_code,
@@ -279,7 +282,8 @@ def fetch_function_by_name(function_name: str) -> Optional[Dict[str, Any]]:
             "requirements": row[2] if isinstance(row[2], list) else json.loads(row[2]) if row[2] else [],
             "execution_interval": row[3],
             "last_execution": row[4],
-            "division": division_list
+            "division": division_list,
+            "email": email_list
         }
         
         return function_data
@@ -501,7 +505,7 @@ def execute_code_in_container(
         start_time = time.time()
         container_name = f"sandbox-{uuid.uuid4()}"
         
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temp_dir:
             code_path = os.path.join(temp_dir, "code.py")
             args_path = os.path.join(temp_dir, "args.json")
             requirements_path = os.path.join(temp_dir, "requirements.txt")
@@ -610,3 +614,4 @@ if __name__ == "__main__":
         'overall_success': overall_success,
         'results': all_results
     }
+

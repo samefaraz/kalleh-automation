@@ -1,0 +1,57 @@
+
+services:
+  # The Unified API Service (registration + execution)
+  api:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: python_automation_api
+    restart: always
+    networks:
+      - shared_net
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock # Allows the API to run docker commands
+      - /tmp:/tmp
+    environment:
+      - DB_HOST=db
+      - DB_NAME=n8ndb
+      - DB_USER=n8nuser
+      - DB_PASSWORD=n8npass
+      - DB_PORT=5432
+      - EXECUTE_API_KEY=your_secret_key_here
+      - SANDBOX_IMAGE_NAME=python-execution-sandbox-v1
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: n8n_postgres
+    restart: always
+    networks:
+      - shared_net
+    environment:
+      - POSTGRES_DB=n8ndb
+      - POSTGRES_USER=n8nuser
+      - POSTGRES_PASSWORD=n8npass
+    ports:
+      - "5435:5432" # Host port 5435 maps to container 5432
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8nuser -d n8ndb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+networks:
+  shared_net:
+    external: true
+    name: my_shared_network
+
+volumes:
+  postgres_data:

@@ -10,7 +10,7 @@ import psycopg2
 from psycopg2 import errors as psycopg2_errors
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
-from fastapi import FastAPI, HTTPException, Request, status, Header, Depends
+from fastapi import APIRouter, HTTPException, Request, status, Header, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, RootModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -43,6 +43,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+#intialize router
+router=APIRouter()
+
 # Rate Limiting Configuration
 EXECUTE_RATE_LIMIT_PER_MINUTE = int(os.getenv("EXECUTE_RATE_LIMIT_PER_MINUTE", "60"))
 EXECUTE_RATE_LIMIT_PER_HOUR = int(os.getenv("EXECUTE_RATE_LIMIT_PER_HOUR", "1000"))
@@ -52,17 +55,6 @@ API_KEY = os.getenv("EXECUTE_API_KEY", None)  # Set in .env for production
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
-
-# FastAPI App
-app = FastAPI(
-    title="Python Function Execution Service",
-    description="API endpoint for executing scheduled Python functions from database",
-    version="1.0.0"
-)
-
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
 
 # Pydantic Models
 class ExecuteRequest(BaseModel):
@@ -170,22 +162,8 @@ def get_db():
         if conn:
             return_db_connection(conn)
 
-@app.on_event("startup")
-async def on_startup():
-    """Initialize services on application startup."""
-    init_db_pool()
-    if not docker_client:
-        logger.warning("Docker client is not available. Execution will fail.")
 
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    """Cleanup on application shutdown."""
-    close_db_pool()
-    logger.info("Execution service shutdown complete")
-
-
-@app.get("/health")
+@router.get("/health")
 async def health_check():
     """
     Health check endpoint to verify service status.
@@ -232,7 +210,7 @@ async def health_check():
     return JSONResponse(content=health_status, status_code=status_code)
 
 
-@app.post("/execute", response_model=ExecuteResponse)
+@router.post("/execute", response_model=ExecuteResponse)
 @limiter.limit(f"{EXECUTE_RATE_LIMIT_PER_MINUTE}/minute")
 @limiter.limit(f"{EXECUTE_RATE_LIMIT_PER_HOUR}/hour")
 async def execute_function(
@@ -363,7 +341,7 @@ async def execute_function(
         raise HTTPException(status_code=500, detail=error_msg)
 
 
-@app.post("/execute/batch", response_model=BatchExecuteResponse)
+@router.post("/execute/batch", response_model=BatchExecuteResponse)
 @limiter.limit(f"{EXECUTE_RATE_LIMIT_PER_MINUTE}/minute")
 @limiter.limit(f"{EXECUTE_RATE_LIMIT_PER_HOUR}/hour")
 async def execute_batch(
@@ -498,9 +476,9 @@ async def execute_batch(
     )
 
 
-@app.get("/functions/ready")
+@router.get("/functions/ready")
 async def get_ready_functions(
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    # x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     conn: psycopg2.extensions.connection = Depends(get_db)
 ):
     """
@@ -511,11 +489,11 @@ async def get_ready_functions(
     2. The time passed since last_execution >= execution_interval (in hours).
     """
     # Verify API key
-    if not verify_api_key(x_api_key):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing API key"
-        )
+    # if not verify_api_key(x_api_key):
+    #     raise HTTPException(
+    #         status_code=status.HTTP_401_UNAUTHORIZED,
+    #         detail="Invalid or missing API key"
+    #     )
     
     # 🎯 1. Get current time, explicitly in UTC and timezone-aware
     now_utc = datetime.now(timezone.utc)

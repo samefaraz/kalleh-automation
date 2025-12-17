@@ -14,7 +14,7 @@ import io # ADDED: For file stream handling
 from datetime import datetime, timezone
 from psycopg2 import pool, errors as psycopg2_errors
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-from fastapi import FastAPI, HTTPException, Request, status, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Request, status, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any, Callable
@@ -23,6 +23,16 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
+from utils import (
+    get_db_connection,
+    return_db_connection, 
+    # connection_pool,
+    get_db_pool,
+    docker_client, 
+    SANDBOX_IMAGE_NAME,
+    unescape_code_string,
+    extract_function_parameters
+)
 # --- Load Environment Variables ---
 load_dotenv()
 
@@ -34,6 +44,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+#intialize router 
+router = APIRouter()
+
+current_pool = get_db_pool()
+connection_pool = current_pool
+# import pdb;pdb.set_trace()
 # --- Configuration ---
 SANDBOX_IMAGE_NAME = "python-execution-sandbox-v1"
 
@@ -63,21 +79,11 @@ RATE_LIMIT_PER_HOUR = int(os.getenv("RATE_LIMIT_PER_HOUR", "100"))
 # --- Container Configuration ---
 CONTAINER_TIMEOUT = int(os.getenv("CONTAINER_TIMEOUT", "300"))
 
-# Global connection pool
-connection_pool: Optional[pool.ThreadedConnectionPool] = None
+
 
 # --- Rate Limiter Initialization ---
 limiter = Limiter(key_func=get_remote_address)
 
-# --- FastAPI App Initialization ---
-app = FastAPI(
-    title="Python Function Execution Sandbox",
-    description="An API to execute Python functions per Excel row and save contacts.",
-    version="3.2.0"
-)
-
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # --- Docker Client Initialization ---
 try:
@@ -95,33 +101,9 @@ def build_sandbox_image():
         docker_client.images.get(SANDBOX_IMAGE_NAME)
     except docker.errors.ImageNotFound:
         logger.info(f"Image '{SANDBOX_IMAGE_NAME}' not found. Building...")
-        docker_client.images.build(path=".", tag=SANDBOX_IMAGE_NAME, rm=True)
+        docker_client.images.build(path="./sandbox", tag=SANDBOX_IMAGE_NAME, rm=True)
 
-def init_db_pool():
-    global connection_pool
-    try:
-        connection_pool = pool.ThreadedConnectionPool(
-            minconn=DB_POOL_MIN_CONN, maxconn=DB_POOL_MAX_CONN, **DB_CONFIG
-        )
-        logger.info("Database connection pool initialized")
-    except Exception as e:
-        logger.error(f"Failed to initialize database connection pool: {e}")
 
-def close_db_pool():
-    if connection_pool:
-        connection_pool.closeall()
-
-@app.on_event("startup")
-async def on_startup():
-    if docker_client:
-        build_sandbox_image()
-    init_db_pool()
-    # Create the contact table if it doesn't exist
-    create_contact_table()
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    close_db_pool()
 
 def parse_requirements(requirements):
     if requirements is None:
@@ -232,12 +214,30 @@ def retry_db_operation(max_attempts=3, delay=1):
         return wrapper
     return decorator
 
-def get_db_connection():
-    if not connection_pool:
-        raise ConnectionError("Pool not available")
-    return connection_pool.getconn()
 
 # --- DB Functions ---
+def create_functions_table():
+    """Ensures pgvector is enabled and the functions table exists."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Create table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS functions (
+                    function_name VARCHAR(255) PRIMARY KEY,
+                    function_code TEXT NOT NULL,
+                    requirements JSONB,
+                    execution_interval INT NOT NULL,
+                    last_execution TEXT
+                );
+            """)
+        conn.commit()
+        logger.info("Functions table verified/created successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize functions table: {e}")
+        conn.rollback()
+    finally:
+        return_db_connection(conn)
 
 def create_contact_table():
     """Ensures the function_contacts table exists."""
@@ -259,7 +259,7 @@ def create_contact_table():
         logger.error(f"Error creating table: {e}")
         conn.rollback()
     finally:
-        connection_pool.putconn(conn)
+        return_db_connection(conn)
 
 @retry_db_operation()
 def save_function_metadata(
@@ -292,7 +292,7 @@ def save_function_metadata(
         conn.rollback()
         raise e
     finally:
-        connection_pool.putconn(conn)
+        return_db_connection(conn)
 
 @retry_db_operation()
 def save_contact_to_db(function_name: str, division: str, email: str):
@@ -313,11 +313,11 @@ def save_contact_to_db(function_name: str, division: str, email: str):
         logger.error(f"Failed to save contact: {e}")
         # We don't raise here to avoid stopping the whole response for one contact fail
     finally:
-        connection_pool.putconn(conn)
+        return_db_connection(conn)
 
 # --- NEW Endpoint ---
 
-@app.post("/execute")
+@router.post("/execute")
 @limiter.limit(f"{RATE_LIMIT_PER_MINUTE}/minute")
 async def execute_code(
     request: Request,
@@ -405,11 +405,7 @@ async def execute_code(
     parameters = extract_function_parameters(unescaped_function_code, function_name)
     results = []
     
-    # Save Metadata
-    # try:
-    #     save_function_metadata(function, function_name, parsed_requirements, execution_interval, time_val)
-    # except Exception as e:
-    #     logger.error(f"Could not save function metadata: {e}")
+
 
     # 3. Execution Loop
     for index, row in df.iterrows():
@@ -422,7 +418,7 @@ async def execute_code(
 
         row_args = create_function_args(parameters, division)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temp_dir:
             # Write args and reqs
             with open(os.path.join(temp_dir, "args.json"), "w") as f:
                 json.dump(row_args, f)
